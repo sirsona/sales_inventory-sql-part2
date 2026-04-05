@@ -1170,12 +1170,264 @@ WHERE
 -- ADVANCED WINDOW + ANALYTICAL PROBLEMS
 -- =====================================================
 -- 91. Which customers rank in the top 10% of spending?
+WITH customer_spending AS (
+    SELECT
+        customer_id,
+        SUM(total_amount) AS total_spent
+    FROM
+        sales s
+    GROUP BY
+        customer_id
+),
+ranked AS (
+    SELECT
+        *,
+        percent_rank() OVER (ORDER BY total_spent) AS percentile_rank
+    FROM
+        customer_spending
+)
+SELECT
+    customer_id,
+    total_spent,
+    percentile_rank
+FROM
+    ranked
+WHERE
+    percentile_rank <= 0.10;
+
 -- 92. Which products contribute to the top 50% of total revenue?
+WITH product_revenue AS (
+    SELECT
+        p.product_id,
+        p.product_name,
+        SUM(s.total_amount) AS total_revenue
+    FROM
+        products p
+        JOIN sales s ON p.product_id = s.product_id
+    GROUP BY
+        p.product_id,
+        p.product_name
+),
+ranked AS (
+    SELECT
+        *,
+        percent_rank() OVER (ORDER BY total_revenue DESC)
+    FROM product_revenue
+)
+SELECT
+    *
+FROM
+    ranked
+WHERE
+    percent_rank <= 0.5;
+
 -- 93. Which customers made purchases in consecutive months?
+WITH customer_purchase AS (
+    SELECT
+        customer_id,
+        date_trunc('month', sale_date) AS purchase_month
+    FROM
+        sales
+    GROUP BY
+        customer_id,
+        purchase_month
+),
+ranked AS (
+    SELECT
+        *,
+        lag(purchase_month) OVER (PARTITION BY customer_id ORDER BY purchase_month) AS prev_month
+    FROM
+        customer_purchase
+)
+SELECT
+    customer_id
+FROM
+    ranked
+WHERE
+    prev_month IS NOT NULL
+    AND purchase_month = prev_month + INTERVAL '1 month';
+
 -- 94. Which products experienced the largest difference between stock quantity and total quantity sold?
+-- large difference -> high stock with low sales, low stock with high sales
+SELECT
+    p.product_id,
+    p.stock_quantity,
+    coalesce(sum(s.quantity_sold), 0) AS total_quantity_sold,
+    coalesce(abs(p.stock_quantity - coalesce(sum(s.quantity_sold), 0))) AS diff
+FROM
+    products p
+    LEFT JOIN sales s ON p.product_id = s.product_id
+GROUP BY
+    p.product_id,
+    p.stock_quantity
+ORDER BY
+    diff DESC
+LIMIT 1;
+
 -- 95. Which customers have spending above the average spending of their membership tier?
+WITH customer_spending AS (
+    SELECT
+        c.customer_id,
+        c.first_name || ' ' || c.last_name AS full_name,
+        c.membership_status,
+        SUM(s.total_amount) AS total_spent
+    FROM
+        customers c
+        LEFT JOIN sales s ON c.customer_id = s.customer_id
+    GROUP BY
+        c.customer_id,
+        full_name,
+        c.membership_status
+),
+ranked AS (
+    SELECT
+        *,
+        avg(total_spent) OVER (PARTITION BY membership_status) AS avg_spending_pier_tier
+    FROM
+        customer_spending
+)
+SELECT
+    customer_id,
+    full_name,
+    membership_status,
+    total_spent,
+    avg_spending_pier_tier
+FROM
+    ranked
+WHERE
+    total_spent > avg_spending_pier_tier;
+
 -- 96. Which products have higher sales than the average sales within their category?
+WITH sales_category AS (
+    SELECT
+        p.product_id,
+        p.category,
+        SUM(s.total_amount) AS total_spent
+    FROM
+        products p
+        LEFT JOIN sales s ON p.product_id = s.product_id
+    GROUP BY
+        p.product_id,
+        p.category
+),
+ranked AS (
+    SELECT
+        *,
+        avg(total_spent) OVER (PARTITION BY category) AS avg_partition_per_categroy
+    FROM
+        sales_category
+)
+SELECT
+    product_id,
+    category,
+    total_spent,
+    avg_partition_per_categroy
+FROM
+    ranked
+WHERE
+    total_spent > avg_partition_per_categroy;
+
 -- 97. Which customer made the largest single purchase relative to their total spending?
+WITH customer_spending AS (
+    SELECT
+        c.customer_id,
+        c.first_name || ' ' || c.last_name AS full_name,
+        SUM(s.total_amount) AS total_spent,
+        MAX(s.total_amount) AS largest_purchase
+    FROM
+        customers c
+        JOIN sales s ON c.customer_id = s.customer_id
+    GROUP BY
+        c.customer_id,
+        full_name
+)
+SELECT
+    *,
+    round(largest_purchase / total_spent * 100, 2) AS ratio
+FROM
+    customer_spending
+ORDER BY
+    ratio DESC;
+
 -- 98. Which products rank among the top 3 most sold products within each category?
+WITH purchase_category AS (
+    SELECT
+        p.product_id,
+        p.product_name,
+        p.category,
+        SUM(s.quantity_sold) AS total_sold
+    FROM
+        products p
+        LEFT JOIN sales s ON p.product_id = s.product_id
+    GROUP BY
+        p.product_id,
+        p.product_name,
+        p.category
+),
+ranked AS (
+    SELECT
+        *,
+        row_number() OVER (PARTITION BY category ORDER BY total_sold DESC) AS rnk
+    FROM
+        purchase_category
+)
+SELECT
+    *
+FROM
+    ranked
+WHERE
+    rnk <= 3;
+
 -- 99. Which customers are tied for the highest total spending?
+WITH customer_spending AS (
+    SELECT
+        c.customer_id,
+        c.first_name || ' ' || c.last_name AS full_name,
+        SUM(s.total_amount) AS total_spending
+    FROM
+        customers c
+        JOIN sales s ON c.customer_id = s.customer_id
+    GROUP BY
+        c.customer_id,
+        full_name
+),
+ranked AS (
+    SELECT
+        *,
+        RANK() OVER (ORDER BY total_spending DESC) AS rnk
+    FROM
+        customer_spending
+)
+SELECT
+    *
+FROM
+    ranked
+WHERE
+    rnk = 1;
+
 -- 100. Which products generated sales every year present in the dataset?
+WITH dataset_years AS (
+    SELECT
+        count(DISTINCT (EXTRACT(YEAR FROM s.sale_date))) AS total_years
+    FROM
+        sales s
+),
+product_year_count AS (
+    SELECT
+        product_id,
+        count(DISTINCT (EXTRACT(YEAR FROM sale_date))) AS years_with_sales
+    FROM
+        sales
+    GROUP BY
+        product_id
+)
+SELECT
+    p.product_id,
+    p.product_name
+FROM
+    product_year_count pcy
+    JOIN products p ON pcy.product_id = p.product_id
+    CROSS JOIN dataset_years dy
+WHERE
+    pcy.years_with_sales = dy.total_years;
+
